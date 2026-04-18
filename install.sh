@@ -66,6 +66,22 @@ note() {
   printf '     %s%s%s\n' "$C_DIM" "$*" "$C_RESET"
 }
 
+confirm_default_yes() {
+  local prompt="$1"
+  local response=""
+
+  if ! can_prompt || [ "$NON_INTERACTIVE" -eq 1 ]; then
+    return 0
+  fi
+
+  printf '  %s [Y/n]: ' "$prompt" > /dev/tty
+  read -r response < /dev/tty || response=""
+  case "${response:-y}" in
+    [Nn]|[Nn][Oo]) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 fail() {
   printf '  %sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2
   exit 1
@@ -116,7 +132,7 @@ refresh_existing_repo() {
     return 0
   fi
 
-  step "Refreshing Alfred checkout"
+  step "Checking Alfred checkout for updates"
   run_quiet "repository fetch" git -C "$REPO_DIR" fetch --prune origin
 
   if git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
@@ -133,11 +149,16 @@ refresh_existing_repo() {
     remote_sha="$(git -C "$REPO_DIR" rev-parse "origin/$BRANCH")"
 
     if [ "$head_sha" = "$remote_sha" ]; then
-      ok "Repository updated"
+      ok "Repository already up to date"
       return 0
     fi
 
     if git -C "$REPO_DIR" merge-base --is-ancestor "$head_sha" "$remote_sha"; then
+      note "Remote has a newer Alfred version available on origin/$BRANCH."
+      if ! confirm_default_yes "Update local checkout to the latest remote revision?"; then
+        note "Leaving local checkout unchanged at $(git -C "$REPO_DIR" rev-parse --short HEAD)."
+        return 0
+      fi
       run_quiet "repository update" git -C "$REPO_DIR" merge --ff-only "origin/$BRANCH"
       ok "Repository updated"
       return 0
@@ -491,4 +512,5 @@ exec env \
   ALFRED_REPO_DIR="$REPO_DIR" \
   ALFRED_REPO_BRANCH="$BRANCH" \
   ALFRED_REPO_URL="https://github.com/$REPO_SLUG.git" \
+  ALFRED_REPO_PREPARED=1 \
   bash "$REPO_DIR/scripts/install.sh" "${INSTALL_ARGS[@]}"
