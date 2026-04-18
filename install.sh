@@ -212,7 +212,8 @@ Options:
   --non-interactive       Skip prompts where possible and rely on env/flags for config
   --fresh-db              Explicitly initialize a fresh local DB when none exists
   --migrate-db PATH       Copy an existing SQLite DB into Alfred runtime if target DB is absent
-  --skip-openclaw-wizard  Provision OpenClaw workspace but skip the interactive OpenClaw prompts (currently Telegram only; CI)
+  --skip-intelligence-wizard
+                          Provision Alfred Intelligence but skip the interactive prompts (currently Telegram only; CI)
   --skip-entity-wizard    Skip the interactive first-entity setup (CI)
   --telegram-token-file PATH
                           Non-interactive Telegram setup: read the bot token from PATH.
@@ -365,7 +366,7 @@ while [ "$#" -gt 0 ]; do
       shift
       MIGRATE_DB_PATH="${1:-}"
       ;;
-    --skip-openclaw-wizard)
+    --skip-intelligence-wizard|--skip-openclaw-wizard)
       SKIP_OPENCLAW_WIZARD=1
       ;;
     --skip-entity-wizard)
@@ -490,7 +491,7 @@ if [ -n "$MIGRATE_DB_PATH" ]; then
   INSTALL_ARGS+=(--migrate-db "$MIGRATE_DB_PATH")
 fi
 if [ "$SKIP_OPENCLAW_WIZARD" -eq 1 ]; then
-  INSTALL_ARGS+=(--skip-openclaw-wizard)
+  INSTALL_ARGS+=(--skip-intelligence-wizard)
 fi
 if [ "$SKIP_ENTITY_WIZARD" -eq 1 ]; then
   INSTALL_ARGS+=(--skip-entity-wizard)

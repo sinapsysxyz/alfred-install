@@ -9,7 +9,7 @@ set -euo pipefail
 # so it keeps working even as it deletes the Alfred repo checkout itself.
 #
 # Defaults are narrow: only Alfred-owned state is removed. Shared tooling
-# (Node, pnpm, nvm, gh, OpenClaw CLI) is preserved unless you pass
+# (Node, pnpm, nvm, gh, Alfred Intelligence CLI) is preserved unless you pass
 # an explicit --purge-* flag. Run with --dry-run first if unsure.
 
 # ── Defaults (may be overridden by env + flags) ──────────────────────────────
@@ -64,9 +64,9 @@ By default the script removes only Alfred-owned state:
   • repo .env.local (secrets)
   • runtime data dir at $DATA_DIR
   • watch dir at $WATCH_DIR
-  • OpenClaw workspace at $OPENCLAW_WORKSPACE_DIR
+  • Alfred Intelligence workspace at $OPENCLAW_WORKSPACE_DIR
 
-Shared tooling (Node, pnpm, nvm, gh, OpenClaw CLI) is preserved
+Shared tooling (Node, pnpm, nvm, gh, Alfred Intelligence CLI) is preserved
 unless you pass an explicit --purge-* flag, because removing it can break
 other projects on the same machine.
 
@@ -78,15 +78,15 @@ Options:
   --keep-watch-dir               Don't remove the watch directory.
                                  Useful if it holds personal files outside
                                  entity-specific subfolders.
-  --keep-openclaw-workspace      Don't remove the Alfred OpenClaw workspace.
-  --purge-openclaw-cli           Also remove the OpenClaw CLI npm package.
+  --keep-intelligence-workspace  Don't remove the Alfred Intelligence workspace.
+  --purge-intelligence-cli       Also remove the Alfred Intelligence CLI npm package.
   --purge-telegram-token         Also remove $TELEGRAM_TOKEN_FILE.
-                                 Only do this if Alfred was the sole OpenClaw
+                                 Only do this if Alfred was the sole intelligence
                                  consumer on this machine.
   --purge-node-tools             Also attempt to uninstall Node, pnpm, gh.
                                  Macros: Homebrew on macOS, apt on Linux. Best
                                  effort; skipped on other platforms.
-  --purge-all                    Shortcut: --purge-openclaw-cli
+  --purge-all                    Shortcut: --purge-intelligence-cli
                                            --purge-telegram-token
                                            --purge-node-tools
   -h, --help                     Show this help.
@@ -96,7 +96,7 @@ Environment:
   ALFRED_DATA_DIR                Runtime data    (default: $DATA_DIR)
   ALFRED_WATCH_DIR               Watch dir       (default: $WATCH_DIR)
   ALFRED_CLI_LAUNCHER            CLI launcher    (default: $CLI_LAUNCHER_PATH)
-  OPENCLAW_WORKSPACE_PARENT_DIR  OpenClaw parent dir (preferred)
+  OPENCLAW_WORKSPACE_PARENT_DIR  Alfred Intelligence parent dir (preferred)
   OPENCLAW_WORKSPACE_DIR         Legacy alias for the parent dir
 
 Examples:
@@ -115,8 +115,8 @@ while [ "$#" -gt 0 ]; do
     --keep-repo)               KEEP_REPO=1 ;;
     --keep-data-dir)           KEEP_DATA_DIR=1 ;;
     --keep-watch-dir)          KEEP_WATCH_DIR=1 ;;
-    --keep-openclaw-workspace) KEEP_OPENCLAW_WORKSPACE=1 ;;
-    --purge-openclaw-cli)      PURGE_OPENCLAW_CLI=1 ;;
+    --keep-intelligence-workspace|--keep-openclaw-workspace) KEEP_OPENCLAW_WORKSPACE=1 ;;
+    --purge-intelligence-cli|--purge-openclaw-cli)         PURGE_OPENCLAW_CLI=1 ;;
     --purge-telegram-token)    PURGE_TELEGRAM_TOKEN=1 ;;
     --purge-node-tools)        PURGE_NODE_TOOLS=1 ;;
     --purge-all)
@@ -194,8 +194,8 @@ summarize() {
   echo "  Data dir:              $DATA_DIR$( [ -d "$DATA_DIR" ] && echo ' [present]' || echo ' [missing]')"
   echo "  Watch dir:             $WATCH_DIR$( [ -d "$WATCH_DIR" ] && echo ' [present]' || echo ' [missing]')"
   echo "  CLI launcher:          $CLI_LAUNCHER_PATH$( [ -e "$CLI_LAUNCHER_PATH" ] && echo ' [present]' || echo ' [missing]')"
-  echo "  OpenClaw workspace:    $OPENCLAW_WORKSPACE_DIR$( [ -d "$OPENCLAW_WORKSPACE_DIR" ] && echo ' [present]' || echo ' [missing]')"
-  echo "  OpenClaw parent (KEEP):$OPENCLAW_PARENT_DIR"
+  echo "  Intelligence ws:       $OPENCLAW_WORKSPACE_DIR$( [ -d "$OPENCLAW_WORKSPACE_DIR" ] && echo ' [present]' || echo ' [missing]')"
+  echo "  Intelligence parent:   $OPENCLAW_PARENT_DIR"
   if [ "$OS_KIND" = "macos" ]; then
     echo "  launchd plist:         $LAUNCHD_PLIST_PATH$( [ -f "$LAUNCHD_PLIST_PATH" ] && echo ' [present]' || echo ' [missing]')"
   fi
@@ -204,8 +204,8 @@ summarize() {
   fi
   echo
   echo "Flags: dry_run=$DRY_RUN yes=$YES"
-  echo "       keep_repo=$KEEP_REPO keep_data=$KEEP_DATA_DIR keep_watch=$KEEP_WATCH_DIR keep_openclaw_workspace=$KEEP_OPENCLAW_WORKSPACE"
-  echo "       purge_openclaw_cli=$PURGE_OPENCLAW_CLI purge_telegram_token=$PURGE_TELEGRAM_TOKEN purge_node_tools=$PURGE_NODE_TOOLS"
+  echo "       keep_repo=$KEEP_REPO keep_data=$KEEP_DATA_DIR keep_watch=$KEEP_WATCH_DIR keep_intelligence_workspace=$KEEP_OPENCLAW_WORKSPACE"
+  echo "       purge_intelligence_cli=$PURGE_OPENCLAW_CLI purge_telegram_token=$PURGE_TELEGRAM_TOKEN purge_node_tools=$PURGE_NODE_TOOLS"
   echo
 }
 
@@ -342,18 +342,18 @@ stage_remove_watch_dir() {
 # Stage: remove Alfred's OpenClaw workspace subdir only. Never touches the
 # parent (`~/.openclaw/`) or other workspaces siblings may own.
 stage_remove_openclaw_workspace() {
-  [ "$KEEP_OPENCLAW_WORKSPACE" -eq 0 ] || { say "Keeping OpenClaw workspace (--keep-openclaw-workspace)"; return 0; }
+  [ "$KEEP_OPENCLAW_WORKSPACE" -eq 0 ] || { say "Keeping Alfred Intelligence workspace (--keep-intelligence-workspace)"; return 0; }
 
   # Narrow invariant: only remove when the path actually ends in /alfred.
   # Anything else means the user is using a custom layout we don't recognize.
   case "$OPENCLAW_WORKSPACE_DIR" in
     */alfred) ;;
     *)
-      warn "OpenClaw workspace path does not end in /alfred — skipping to avoid removing an unrelated workspace: $OPENCLAW_WORKSPACE_DIR"
+      warn "Intelligence workspace path does not end in /alfred — skipping to avoid removing an unrelated workspace: $OPENCLAW_WORKSPACE_DIR"
       return 0
       ;;
   esac
-  rm_path "$OPENCLAW_WORKSPACE_DIR" "OpenClaw workspace (Alfred)"
+  rm_path "$OPENCLAW_WORKSPACE_DIR" "Alfred Intelligence workspace"
 }
 
 # Stage: remove the Alfred repo checkout. Only if it actually looks like a git
@@ -379,15 +379,15 @@ stage_remove_repo() {
 stage_purge_openclaw_cli() {
   [ "$PURGE_OPENCLAW_CLI" -eq 1 ] || return 0
   if ! command -v npm >/dev/null 2>&1; then
-    say "npm not found, cannot uninstall OpenClaw"
+    say "npm not found, cannot uninstall Alfred Intelligence"
     return 0
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    plan "npm uninstall -g --prefix \"$LOCAL_NPM_PREFIX\" openclaw"
-    plan "npm uninstall -g openclaw"
+    plan "remove Alfred Intelligence CLI from the user-local npm prefix"
+    plan "remove Alfred Intelligence CLI from the global npm prefix"
     return 0
   fi
-  say "Uninstalling OpenClaw CLI"
+  say "Uninstalling Alfred Intelligence CLI"
   npm uninstall -g --prefix "$LOCAL_NPM_PREFIX" openclaw >/dev/null 2>&1 \
     || npm uninstall -g openclaw >/dev/null 2>&1 \
     || warn "npm uninstall failed (ignored)"
