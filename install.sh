@@ -2,6 +2,9 @@
 set -euo pipefail
 
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+if [ -d "$HOME/.local/bin" ]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 DEFAULT_REPO_DIR="$HOME/.local/opt/alfred"
 REPO_DIR="${ALFRED_REPO_DIR:-$DEFAULT_REPO_DIR}"
 case "$(uname -s)" in
@@ -13,10 +16,14 @@ REPO_SLUG="${ALFRED_REPO_SLUG:-sinapsysxyz/alfred}"
 BRANCH="${ALFRED_REPO_BRANCH:-main}"
 MODE="prod"
 INSTALL_LAUNCHD=0
+INSTALL_SYSTEMD=""
 FRESH_DB=0
 AUTO_FRESH_DB=0
 MIGRATE_DB_PATH=""
 SKIP_OPENCLAW_WIZARD=0
+SKIP_ENTITY_WIZARD=0
+NON_INTERACTIVE=0
+SKIP_START=0
 PRINT_SUMMARY_ONLY=0
 TELEGRAM_TOKEN_FILE=""
 SUDO=""
@@ -179,12 +186,17 @@ Options:
   --branch NAME           Git branch to clone or refresh (default: $BRANCH)
   --dev                   Install for local development workflow
   --launchd               Generate and install a per-user LaunchAgent, then load it
+  --systemd               Force Linux systemd user unit install
+  --no-systemd            Skip Linux systemd user unit install
+  --non-interactive       Skip prompts where possible and rely on env/flags for config
   --fresh-db              Explicitly initialize a fresh local DB when none exists
   --migrate-db PATH       Copy an existing SQLite DB into Alfred runtime if target DB is absent
   --skip-openclaw-wizard  Provision OpenClaw workspace but skip the interactive email/Telegram wizard (CI)
+  --skip-entity-wizard    Skip the interactive first-entity setup (CI)
   --telegram-token-file PATH
                           Non-interactive Telegram setup: read the bot token from PATH.
                           Alternative: export TELEGRAM_BOT_TOKEN in the environment.
+  --no-start              Install Alfred without starting services at the end
   --summary               Print resolved install plan and exit
   --help, -h              Show this help
 
@@ -316,6 +328,15 @@ while [ "$#" -gt 0 ]; do
     --launchd)
       INSTALL_LAUNCHD=1
       ;;
+    --systemd)
+      INSTALL_SYSTEMD=1
+      ;;
+    --no-systemd)
+      INSTALL_SYSTEMD=0
+      ;;
+    --non-interactive)
+      NON_INTERACTIVE=1
+      ;;
     --fresh-db)
       FRESH_DB=1
       ;;
@@ -326,9 +347,15 @@ while [ "$#" -gt 0 ]; do
     --skip-openclaw-wizard)
       SKIP_OPENCLAW_WIZARD=1
       ;;
+    --skip-entity-wizard)
+      SKIP_ENTITY_WIZARD=1
+      ;;
     --telegram-token-file)
       shift
       TELEGRAM_TOKEN_FILE="${1:-}"
+      ;;
+    --no-start)
+      SKIP_START=1
       ;;
     --summary)
       PRINT_SUMMARY_ONLY=1
@@ -372,9 +399,13 @@ data_dir=$DATA_DIR
 branch=$BRANCH
 mode=$MODE
 launchd=$INSTALL_LAUNCHD
+systemd=$INSTALL_SYSTEMD
 fresh_db=$FRESH_DB
 migrate_db=${MIGRATE_DB_PATH:-}
 skip_openclaw_wizard=$SKIP_OPENCLAW_WIZARD
+skip_entity_wizard=$SKIP_ENTITY_WIZARD
+non_interactive=$NON_INTERACTIVE
+skip_start=$SKIP_START
 telegram_token_file=${TELEGRAM_TOKEN_FILE:-}
 repo_slug=$REPO_SLUG
 EOF
@@ -421,6 +452,16 @@ fi
 if [ "$INSTALL_LAUNCHD" -eq 1 ]; then
   INSTALL_ARGS+=(--launchd)
 fi
+if [ -n "$INSTALL_SYSTEMD" ]; then
+  if [ "$INSTALL_SYSTEMD" -eq 1 ]; then
+    INSTALL_ARGS+=(--systemd)
+  else
+    INSTALL_ARGS+=(--no-systemd)
+  fi
+fi
+if [ "$NON_INTERACTIVE" -eq 1 ]; then
+  INSTALL_ARGS+=(--non-interactive)
+fi
 if [ "$FRESH_DB" -eq 1 ]; then
   INSTALL_ARGS+=(--fresh-db)
 fi
@@ -430,8 +471,14 @@ fi
 if [ "$SKIP_OPENCLAW_WIZARD" -eq 1 ]; then
   INSTALL_ARGS+=(--skip-openclaw-wizard)
 fi
+if [ "$SKIP_ENTITY_WIZARD" -eq 1 ]; then
+  INSTALL_ARGS+=(--skip-entity-wizard)
+fi
 if [ -n "$TELEGRAM_TOKEN_FILE" ]; then
   INSTALL_ARGS+=(--telegram-token-file "$TELEGRAM_TOKEN_FILE")
+fi
+if [ "$SKIP_START" -eq 1 ]; then
+  INSTALL_ARGS+=(--no-start)
 fi
 
 step "Preparing Alfred runtime"
