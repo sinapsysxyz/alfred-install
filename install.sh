@@ -4,15 +4,20 @@ set -euo pipefail
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 DEFAULT_REPO_DIR="$HOME/Developer/GitHub/alfred"
 REPO_DIR="${ALFRED_REPO_DIR:-$DEFAULT_REPO_DIR}"
-DATA_DIR="${ALFRED_DATA_DIR:-$HOME/Library/Application Support/Alfred}"
+case "$(uname -s)" in
+  Darwin) DEFAULT_DATA_DIR="$HOME/Library/Application Support/Alfred" ;;
+  *)      DEFAULT_DATA_DIR="$HOME/.local/share/alfred" ;;
+esac
+DATA_DIR="${ALFRED_DATA_DIR:-$DEFAULT_DATA_DIR}"
 REPO_SLUG="${ALFRED_REPO_SLUG:-sinapsysxyz/alfred}"
 BRANCH="${ALFRED_REPO_BRANCH:-main}"
 MODE="prod"
 INSTALL_LAUNCHD=0
 FRESH_DB=0
 MIGRATE_DB_PATH=""
-WITH_OPENCLAW=0
+SKIP_OPENCLAW_WIZARD=0
 PRINT_SUMMARY_ONLY=0
+TELEGRAM_TOKEN_FILE=""
 
 say() {
   printf '[alfred-install] %s\n' "$*"
@@ -39,12 +44,16 @@ Options:
   --launchd               Generate and install a per-user LaunchAgent, then load it
   --fresh-db              Initialize a fresh local DB when none exists
   --migrate-db PATH       Copy an existing SQLite DB into Alfred runtime if target DB is absent
-  --with-openclaw         Show and prepare the optional OpenClaw integration path
+  --skip-openclaw-wizard  Provision OpenClaw workspace but skip the interactive email/Telegram wizard (CI)
+  --telegram-token-file PATH
+                          Non-interactive Telegram setup: read the bot token from PATH.
+                          Alternative: export TELEGRAM_BOT_TOKEN in the environment.
   --summary               Print resolved install plan and exit
   --help, -h              Show this help
 
 Environment:
   GITHUB_TOKEN            GitHub token with read access to $REPO_SLUG
+  TELEGRAM_BOT_TOKEN      Telegram bot token (alternative to --telegram-token-file)
 EOF
 }
 
@@ -118,8 +127,12 @@ while [ "$#" -gt 0 ]; do
       shift
       MIGRATE_DB_PATH="${1:-}"
       ;;
-    --with-openclaw)
-      WITH_OPENCLAW=1
+    --skip-openclaw-wizard)
+      SKIP_OPENCLAW_WIZARD=1
+      ;;
+    --telegram-token-file)
+      shift
+      TELEGRAM_TOKEN_FILE="${1:-}"
       ;;
     --summary)
       PRINT_SUMMARY_ONLY=1
@@ -146,6 +159,10 @@ if [ -n "$MIGRATE_DB_PATH" ] && [ ! -f "$MIGRATE_DB_PATH" ]; then
   fail "Migration source not found: $MIGRATE_DB_PATH"
 fi
 
+if [ -n "$TELEGRAM_TOKEN_FILE" ] && [ ! -r "$TELEGRAM_TOKEN_FILE" ]; then
+  fail "Telegram token file not readable: $TELEGRAM_TOKEN_FILE"
+fi
+
 if [ "$PRINT_SUMMARY_ONLY" -eq 1 ]; then
   cat <<EOF
 repo_dir=$REPO_DIR
@@ -155,7 +172,8 @@ mode=$MODE
 launchd=$INSTALL_LAUNCHD
 fresh_db=$FRESH_DB
 migrate_db=${MIGRATE_DB_PATH:-}
-with_openclaw=$WITH_OPENCLAW
+skip_openclaw_wizard=$SKIP_OPENCLAW_WIZARD
+telegram_token_file=${TELEGRAM_TOKEN_FILE:-}
 repo_slug=$REPO_SLUG
 EOF
   exit 0
@@ -192,8 +210,11 @@ fi
 if [ -n "$MIGRATE_DB_PATH" ]; then
   INSTALL_ARGS+=(--migrate-db "$MIGRATE_DB_PATH")
 fi
-if [ "$WITH_OPENCLAW" -eq 1 ]; then
-  INSTALL_ARGS+=(--with-openclaw)
+if [ "$SKIP_OPENCLAW_WIZARD" -eq 1 ]; then
+  INSTALL_ARGS+=(--skip-openclaw-wizard)
+fi
+if [ -n "$TELEGRAM_TOKEN_FILE" ]; then
+  INSTALL_ARGS+=(--telegram-token-file "$TELEGRAM_TOKEN_FILE")
 fi
 
 exec ./scripts/install.sh "${INSTALL_ARGS[@]}"
