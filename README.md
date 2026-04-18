@@ -65,12 +65,12 @@ bash cleanup.sh --dry-run
 bash cleanup.sh -y
 ```
 
-Default cleanup removes only Alfred-owned state. Shared tooling (Node, pnpm, nvm, `gh`, global `@openclaw/cli`) is preserved so unrelated projects keep working. Common variants:
+Default cleanup removes only Alfred-owned state. Shared tooling (Node, pnpm, nvm, `gh`, `openclaw`) is preserved so unrelated projects keep working. Common variants:
 
 ```bash
 bash cleanup.sh -y --keep-watch-dir            # preserve ~/Documents/Alfred
 bash cleanup.sh -y --keep-repo                 # keep the repo, wipe runtime state + .env.local
-bash cleanup.sh -y --purge-openclaw-cli        # also remove the global @openclaw/cli
+bash cleanup.sh -y --purge-openclaw-cli        # also remove the OpenClaw CLI
 bash cleanup.sh -y --purge-telegram-token      # also remove ~/.openclaw/secrets/telegram-bot-token
 bash cleanup.sh -y --purge-all                 # everything including shared tooling
 ```

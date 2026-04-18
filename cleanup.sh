@@ -9,7 +9,7 @@ set -euo pipefail
 # so it keeps working even as it deletes the Alfred repo checkout itself.
 #
 # Defaults are narrow: only Alfred-owned state is removed. Shared tooling
-# (Node, pnpm, nvm, gh, global @openclaw/cli) is preserved unless you pass
+# (Node, pnpm, nvm, gh, OpenClaw CLI) is preserved unless you pass
 # an explicit --purge-* flag. Run with --dry-run first if unsure.
 
 # ── Defaults (may be overridden by env + flags) ──────────────────────────────
@@ -23,6 +23,7 @@ REPO_DIR="${ALFRED_REPO_DIR:-$HOME/.local/opt/alfred}"
 DATA_DIR="${ALFRED_DATA_DIR:-$DEFAULT_DATA_DIR}"
 WATCH_DIR="${ALFRED_WATCH_DIR:-$HOME/Documents/Alfred}"
 CLI_LAUNCHER_PATH="${ALFRED_CLI_LAUNCHER:-$HOME/.local/bin/alfred}"
+LOCAL_NPM_PREFIX="${ALFRED_LOCAL_NPM_PREFIX:-$HOME/.local}"
 
 DEFAULT_OPENCLAW_PARENT_DIR="$HOME/.openclaw/workspace"
 OPENCLAW_PARENT_DIR="${OPENCLAW_WORKSPACE_PARENT_DIR:-${OPENCLAW_WORKSPACE_DIR:-$DEFAULT_OPENCLAW_PARENT_DIR}}"
@@ -65,7 +66,7 @@ By default the script removes only Alfred-owned state:
   • watch dir at $WATCH_DIR
   • OpenClaw workspace at $OPENCLAW_WORKSPACE_DIR
 
-Shared tooling (Node, pnpm, nvm, gh, global @openclaw/cli) is preserved
+Shared tooling (Node, pnpm, nvm, gh, OpenClaw CLI) is preserved
 unless you pass an explicit --purge-* flag, because removing it can break
 other projects on the same machine.
 
@@ -78,7 +79,7 @@ Options:
                                  Useful if it holds personal files outside
                                  entity-specific subfolders.
   --keep-openclaw-workspace      Don't remove the Alfred OpenClaw workspace.
-  --purge-openclaw-cli           Also run 'npm uninstall -g @openclaw/cli'.
+  --purge-openclaw-cli           Also remove the OpenClaw CLI npm package.
   --purge-telegram-token         Also remove $TELEGRAM_TOKEN_FILE.
                                  Only do this if Alfred was the sole OpenClaw
                                  consumer on this machine.
@@ -378,15 +379,18 @@ stage_remove_repo() {
 stage_purge_openclaw_cli() {
   [ "$PURGE_OPENCLAW_CLI" -eq 1 ] || return 0
   if ! command -v npm >/dev/null 2>&1; then
-    say "npm not found, cannot uninstall @openclaw/cli"
+    say "npm not found, cannot uninstall OpenClaw"
     return 0
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    plan "npm uninstall -g @openclaw/cli"
+    plan "npm uninstall -g --prefix \"$LOCAL_NPM_PREFIX\" openclaw"
+    plan "npm uninstall -g openclaw"
     return 0
   fi
-  say "Uninstalling @openclaw/cli globally"
-  npm uninstall -g @openclaw/cli >/dev/null 2>&1 || warn "npm uninstall failed (ignored)"
+  say "Uninstalling OpenClaw CLI"
+  npm uninstall -g --prefix "$LOCAL_NPM_PREFIX" openclaw >/dev/null 2>&1 \
+    || npm uninstall -g openclaw >/dev/null 2>&1 \
+    || warn "npm uninstall failed (ignored)"
 }
 
 stage_purge_telegram_token() {
