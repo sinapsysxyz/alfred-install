@@ -102,7 +102,7 @@ banner() {
 }
 
 step() {
-  printf '  %s->%s %s\n' "$C_BLUE" "$C_RESET" "$*"
+  printf '\n  %s->%s %s%s%s\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
 }
 
 ok() {
