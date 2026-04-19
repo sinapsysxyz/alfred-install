@@ -141,11 +141,26 @@ fail() {
 run_quiet() {
   local label="$1"
   shift
-  local log_file persisted_log
+  local log_file persisted_log cmd_pid cmd_status
   log_file="$(mktemp "${TMPDIR:-/tmp}/alfred-install.XXXXXX")"
   persisted_log="${log_file}.log"
 
-  if "$@" >"$log_file" 2>&1; then
+  if [ -t 1 ]; then
+    "$@" >"$log_file" 2>&1 &
+    cmd_pid=$!
+    spin_while_running "$cmd_pid"
+    set +e
+    wait "$cmd_pid"
+    cmd_status=$?
+    set -e
+  elif "$@" >"$log_file" 2>&1; then
+    rm -f "$log_file"
+    return 0
+  else
+    cmd_status=$?
+  fi
+
+  if [ "${cmd_status:-0}" -eq 0 ]; then
     rm -f "$log_file"
     return 0
   fi
@@ -157,6 +172,30 @@ run_quiet() {
   tail -n 80 "$persisted_log" >&2 || true
   printf '%sFull log:%s %s\n' "$C_DIM" "$C_RESET" "$persisted_log" >&2
   exit 1
+}
+
+spin_while_running() {
+  [ -t 1 ] || return 0
+
+  local pid="$1"
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local i=0
+  local ticks=0
+  local shown=0
+
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$ticks" -ge 2 ]; then
+      shown=1
+      printf '\r%s%s%s %s' "$C_DIM" "${frames[$i]}" "$C_RESET" "Working..."
+      i=$(( (i + 1) % ${#frames[@]} ))
+    fi
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+
+  if [ "$shown" -eq 1 ]; then
+    printf '\r\033[2K'
+  fi
 }
 
 repo_has_local_changes() {
