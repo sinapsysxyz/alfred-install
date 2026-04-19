@@ -49,6 +49,11 @@ INSTALL_STATE_FILE=""
 CLOUD_ENV_FILE=""
 OPENCLAW_PARENT_DIR="${OPENCLAW_WORKSPACE_PARENT_DIR:-${OPENCLAW_WORKSPACE_DIR:-$HOME/.openclaw/workspace}}"
 OPENCLAW_WORKSPACE_DIR="$OPENCLAW_PARENT_DIR/alfred"
+OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$HOME/.openclaw}"
+OPENCLAW_CONFIG_FILE="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_CONFIG_DIR/openclaw.json}"
+OPENCLAW_ENV_FILE="$OPENCLAW_CONFIG_DIR/.env"
+OPENCLAW_SECRETS_DIR="$OPENCLAW_CONFIG_DIR/secrets"
+OPENCLAW_GATEWAY_UNIT_FILE="$HOME/.config/systemd/user/openclaw-gateway.service"
 SERVICE_MANAGER=""
 SERVICE_UNITS_VALUE=""
 LAUNCHD_LABELS_VALUE=""
@@ -72,6 +77,67 @@ if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
 else
   SUDO=""
 fi
+
+if [ -t 1 ]; then
+  TTY_RESET=$'\033[0m'
+  TTY_BOLD=$'\033[1m'
+  TTY_DIM=$'\033[2m'
+  TTY_BLUE=$'\033[38;5;111m'
+  TTY_GREEN=$'\033[38;5;34m'
+  TTY_YELLOW=$'\033[38;5;214m'
+else
+  TTY_RESET=""
+  TTY_BOLD=""
+  TTY_DIM=""
+  TTY_BLUE=""
+  TTY_GREEN=""
+  TTY_YELLOW=""
+fi
+
+CLEANUP_PREFIX="${TTY_DIM}[alfred-cleanup]${TTY_RESET}"
+CLEANUP_RULE="────────────────────────────────────────"
+
+fmt_path() {
+  local p="${1:-}"
+  if [ -z "$p" ]; then printf -- '—'; return; fi
+  if [ -n "${HOME:-}" ] && [ "${p#$HOME}" != "$p" ]; then
+    printf '~%s' "${p#$HOME}"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+fmt_presence() {
+  local p="$1" kind="${2:-path}"
+  case "$kind" in
+    dir)   if [ -d "$p" ]; then printf '[present]'; else printf '[missing]'; fi ;;
+    file)  if [ -f "$p" ]; then printf '[present]'; else printf '[missing]'; fi ;;
+    git)   if [ -d "$p/.git" ]; then printf '[present]'; else printf '[missing]'; fi ;;
+    any)   if [ -e "$p" ] || [ -L "$p" ]; then printf '[present]'; else printf '[missing]'; fi ;;
+  esac
+}
+
+tty_header() {
+  printf '\n%b->%b %b%s%b\n\n' "$TTY_BLUE" "$TTY_RESET" "$TTY_BOLD" "$1" "$TTY_RESET"
+}
+
+tty_rule() {
+  printf '%s\n' "$CLEANUP_RULE"
+}
+
+tty_kv() {
+  # tty_kv LABEL VALUE [HINT]
+  local label="$1" value="${2:-—}" hint="${3:-}"
+  if [ -n "$hint" ]; then
+    printf '  %-20s %s  %b%s%b\n' "$label" "$value" "$TTY_DIM" "$hint" "$TTY_RESET"
+  else
+    printf '  %-20s %s\n' "$label" "$value"
+  fi
+}
+
+tty_note() {
+  printf '  %b%s%b\n' "$TTY_DIM" "$*" "$TTY_RESET"
+}
 
 DRY_RUN=0
 YES=0
@@ -161,10 +227,10 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-say()  { printf '[alfred-cleanup] %s\n' "$*"; }
-ok()   { printf '[alfred-cleanup] \xe2\x9c\x93 %s\n' "$*"; }
-warn() { printf '[alfred-cleanup] WARN: %s\n' "$*"; }
-plan() { printf '[alfred-cleanup] plan: %s\n' "$*"; }
+say()  { printf '%b %s\n' "$CLEANUP_PREFIX" "$*"; }
+ok()   { printf '%b %b✓%b %s\n' "$CLEANUP_PREFIX" "$TTY_GREEN" "$TTY_RESET" "$*"; }
+warn() { printf '%b %b!%b %s\n' "$CLEANUP_PREFIX" "$TTY_YELLOW" "$TTY_RESET" "$*" >&2; }
+plan() { printf '%b %bplan%b %s\n' "$CLEANUP_PREFIX" "$TTY_DIM" "$TTY_RESET" "$*"; }
 
 run_with_sudo() {
   if [ -n "$SUDO" ]; then
@@ -273,6 +339,7 @@ resolve_defaults() {
 
 confirm() {
   local msg="$1"
+  local default_yes="${2:-0}"
   if [ "$YES" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then
     return 0
   fi
@@ -280,10 +347,145 @@ confirm() {
     warn "Non-interactive shell without -y; aborting to stay safe."
     exit 1
   fi
-  printf '%s [y/N] ' "$msg" > /dev/tty
+  local hint='[y/N]'
+  [ "$default_yes" = "1" ] && hint='[Y/n]'
+  printf '%s %s ' "$msg" "$hint" > /dev/tty
   local reply=""
   read -r reply < /dev/tty || reply=""
-  [[ "$reply" =~ ^[Yy]$ ]]
+  if [ "$default_yes" = "1" ]; then
+    [[ -z "$reply" || "$reply" =~ ^[Yy]$ ]]
+  else
+    [[ "$reply" =~ ^[Yy]$ ]]
+  fi
+}
+
+menu_can_prompt() {
+  [ "$YES" -eq 1 ] && return 1
+  [ "$DRY_RUN" -eq 1 ] && return 1
+  # If CLI flags already flipped any toggle, treat CLI as the authoritative UI.
+  if [ "$KEEP_REPO" -eq 1 ] \
+     || [ "$KEEP_DATA_DIR" -eq 1 ] \
+     || [ "$KEEP_WATCH_DIR" -eq 1 ] \
+     || [ "$KEEP_OPENCLAW_WORKSPACE" -eq 1 ] \
+     || [ "$KEEP_CLOUD_REGISTRATION" -eq 1 ] \
+     || [ "$PURGE_OPENCLAW_CLI" -eq 1 ] \
+     || [ "$PURGE_TELEGRAM_TOKEN" -eq 1 ] \
+     || [ "$PURGE_NODE_TOOLS" -eq 1 ]; then
+    return 1
+  fi
+  [ -t 0 ] && [ -r /dev/tty ] && return 0
+  return 1
+}
+
+menu_mark() {
+  # menu_mark FLAG_VALUE → prints "x" or " " in TTY box
+  if [ "${1:-0}" = "1" ]; then
+    printf '%bx%b' "$TTY_GREEN" "$TTY_RESET"
+  else
+    printf ' '
+  fi
+}
+
+menu_row() {
+  # menu_row NUMBER FLAG_VALUE NAME DESCRIPTION
+  local num="$1" val="$2" name="$3" desc="$4"
+  printf '  [%s] %d) %-32s %b%s%b\n' "$(menu_mark "$val")" "$num" "$name" "$TTY_DIM" "$desc" "$TTY_RESET"
+}
+
+menu_apply_preset() {
+  # Reset then apply preset. Called with preset name.
+  DRY_RUN=0
+  KEEP_REPO=0
+  KEEP_DATA_DIR=0
+  KEEP_WATCH_DIR=0
+  KEEP_OPENCLAW_WORKSPACE=0
+  KEEP_CLOUD_REGISTRATION=0
+  PURGE_OPENCLAW_CLI=0
+  PURGE_TELEGRAM_TOKEN=0
+  PURGE_NODE_TOOLS=0
+
+  case "$1" in
+    default) ;;
+    keep_data)
+      KEEP_DATA_DIR=1
+      KEEP_WATCH_DIR=1
+      KEEP_OPENCLAW_WORKSPACE=1
+      ;;
+    keep_repo)
+      KEEP_REPO=1
+      ;;
+    full_purge)
+      PURGE_OPENCLAW_CLI=1
+      PURGE_TELEGRAM_TOKEN=1
+      PURGE_NODE_TOOLS=1
+      ;;
+    dry_run)
+      DRY_RUN=1
+      ;;
+  esac
+}
+
+menu_customize() {
+  local reply
+  while true; do
+    tty_header "Customize flags"
+    tty_note "press a number to toggle; empty line to continue; 'q' to go back"
+    printf '\n'
+    menu_row 1 "$DRY_RUN"                   "dry-run"                       "Preview only — nothing is changed."
+    menu_row 2 "$KEEP_REPO"                 "keep-repo"                     "Don't remove the Alfred repo checkout."
+    menu_row 3 "$KEEP_DATA_DIR"             "keep-data-dir"                 "Don't remove the runtime data dir (SQLite, secrets, chat)."
+    menu_row 4 "$KEEP_WATCH_DIR"            "keep-watch-dir"                "Don't remove the watch directory."
+    menu_row 5 "$KEEP_OPENCLAW_WORKSPACE"   "keep-intelligence-workspace"   "Don't remove the Alfred Intelligence workspace."
+    menu_row 6 "$KEEP_CLOUD_REGISTRATION"   "keep-cloud-registration"       "Cloud only: skip runtime decommission."
+    menu_row 7 "$PURGE_OPENCLAW_CLI"        "purge-intelligence-cli"        "Also remove the Alfred Intelligence CLI npm package."
+    menu_row 8 "$PURGE_TELEGRAM_TOKEN"      "purge-telegram-token"          "Also remove $TELEGRAM_TOKEN_FILE."
+    menu_row 9 "$PURGE_NODE_TOOLS"          "purge-node-tools"              "Also uninstall Node, pnpm, gh (best effort)."
+    printf '\n'
+    printf '> ' > /dev/tty
+    read -r reply < /dev/tty || reply=""
+    case "$reply" in
+      "") return 0 ;;
+      q|Q) return 1 ;;
+      1) DRY_RUN=$((1 - DRY_RUN)) ;;
+      2) KEEP_REPO=$((1 - KEEP_REPO)) ;;
+      3) KEEP_DATA_DIR=$((1 - KEEP_DATA_DIR)) ;;
+      4) KEEP_WATCH_DIR=$((1 - KEEP_WATCH_DIR)) ;;
+      5) KEEP_OPENCLAW_WORKSPACE=$((1 - KEEP_OPENCLAW_WORKSPACE)) ;;
+      6) KEEP_CLOUD_REGISTRATION=$((1 - KEEP_CLOUD_REGISTRATION)) ;;
+      7) PURGE_OPENCLAW_CLI=$((1 - PURGE_OPENCLAW_CLI)) ;;
+      8) PURGE_TELEGRAM_TOKEN=$((1 - PURGE_TELEGRAM_TOKEN)) ;;
+      9) PURGE_NODE_TOOLS=$((1 - PURGE_NODE_TOOLS)) ;;
+      *) tty_note "Unknown option: $reply" ;;
+    esac
+  done
+}
+
+interactive_menu() {
+  menu_can_prompt || return 0
+
+  while true; do
+    tty_header "Choose what to clean"
+    printf '  1) %-18s %b%s%b\n' "Default cleanup"   "$TTY_DIM" "Remove Alfred state; keep shared tooling. (recommended)" "$TTY_RESET"
+    printf '  2) %-18s %b%s%b\n' "Keep user data"    "$TTY_DIM" "Preserve data dir, watch dir, and intelligence workspace." "$TTY_RESET"
+    printf '  3) %-18s %b%s%b\n' "Keep the repo"     "$TTY_DIM" "Preserve the Alfred repo checkout." "$TTY_RESET"
+    printf '  4) %-18s %b%s%b\n' "Full purge"        "$TTY_DIM" "Default + Intelligence CLI + Telegram token + Node tools." "$TTY_RESET"
+    printf '  5) %-18s %b%s%b\n' "Dry run"           "$TTY_DIM" "Preview only — no changes." "$TTY_RESET"
+    printf '  6) %-18s %b%s%b\n' "Custom..."         "$TTY_DIM" "Toggle individual flags one by one." "$TTY_RESET"
+    printf '  0) %-18s %b%s%b\n' "Abort"             "$TTY_DIM" "Quit without changes." "$TTY_RESET"
+    printf '\nSelect [1]: ' > /dev/tty
+    local reply=""
+    read -r reply < /dev/tty || reply=""
+    case "${reply:-1}" in
+      1) menu_apply_preset default;     return 0 ;;
+      2) menu_apply_preset keep_data;   return 0 ;;
+      3) menu_apply_preset keep_repo;   return 0 ;;
+      4) menu_apply_preset full_purge;  return 0 ;;
+      5) menu_apply_preset dry_run;     return 0 ;;
+      6) menu_customize && return 0 ;;
+      0|q|Q) say "Aborted."; exit 0 ;;
+      *) tty_note "Unknown option: $reply"; printf '\n' ;;
+    esac
+  done
 }
 
 run_cmd() {
@@ -329,6 +531,44 @@ rm_path() {
   ok "Removed $label ($target)"
 }
 
+rm_empty_dir() {
+  local target="$1"
+  local label="${2:-$target}"
+
+  [ -n "$target" ] || return 0
+  [ -d "$target" ] || return 0
+  [ "$(realpath "$target" 2>/dev/null || printf '%s' "$target")" != "$HOME" ] || return 0
+  [ -z "$(ls -A "$target" 2>/dev/null)" ] || return 0
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    plan "rmdir $target ($label)"
+    return 0
+  fi
+
+  if path_needs_sudo "$target"; then
+    run_with_sudo rmdir "$target" 2>/dev/null || true
+  else
+    rmdir "$target" 2>/dev/null || true
+  fi
+
+  if [ ! -d "$target" ]; then
+    ok "Removed empty $label ($target)"
+  fi
+}
+
+openclaw_runtime_owned_by_alfred() {
+  if [ -d "$OPENCLAW_WORKSPACE_DIR" ]; then
+    return 0
+  fi
+
+  if [ -f "$OPENCLAW_CONFIG_FILE" ]; then
+    grep -Fqs "$OPENCLAW_WORKSPACE_DIR" "$OPENCLAW_CONFIG_FILE" && return 0
+    grep -Eq '"workspace"[[:space:]]*:[[:space:]]*".*/alfred"' "$OPENCLAW_CONFIG_FILE" && return 0
+  fi
+
+  return 1
+}
+
 decommission_url() {
   if [ -n "$CLOUD_DECOMMISSION_URL" ]; then
     printf '%s\n' "$CLOUD_DECOMMISSION_URL"
@@ -341,29 +581,28 @@ decommission_url() {
 }
 
 summarize() {
-  echo
-  echo "Alfred cleanup plan"
-  echo "==================="
-  echo "  Mode:                  $INSTALL_MODE"
-  echo "  Install state:         $INSTALL_STATE_FILE$( [ -f "$INSTALL_STATE_FILE" ] && echo ' [present]' || echo ' [missing]')"
-  echo "  Repo:                  $REPO_DIR$( [ -d "$REPO_DIR/.git" ] && echo ' [present]' || echo ' [missing]')"
-  echo "  Data dir:              $DATA_DIR$( [ -d "$DATA_DIR" ] && echo ' [present]' || echo ' [missing]')"
-  echo "  Watch dir:             $WATCH_DIR$( [ -d "$WATCH_DIR" ] && echo ' [present]' || echo ' [missing]')"
-  echo "  CLI launcher:          $CLI_LAUNCHER_PATH$( [ -e "$CLI_LAUNCHER_PATH" ] && echo ' [present]' || echo ' [missing]')"
-  echo "  Service manager:       $SERVICE_MANAGER"
-  echo "  Service units:         ${SERVICE_UNITS_VALUE:-<none>}"
-  echo "  Intelligence ws:       $OPENCLAW_WORKSPACE_DIR$( [ -d "$OPENCLAW_WORKSPACE_DIR" ] && echo ' [present]' || echo ' [missing]')"
+  tty_header "Alfred cleanup plan"
+  tty_kv "Mode"            "$INSTALL_MODE"
+  tty_kv "Install state"   "$(fmt_path "$INSTALL_STATE_FILE")"   "$(fmt_presence "$INSTALL_STATE_FILE" file)"
+  tty_kv "Repo"            "$(fmt_path "$REPO_DIR")"             "$(fmt_presence "$REPO_DIR" git)"
+  tty_kv "Data dir"        "$(fmt_path "$DATA_DIR")"             "$(fmt_presence "$DATA_DIR" dir)"
+  tty_kv "Watch dir"       "$(fmt_path "$WATCH_DIR")"            "$(fmt_presence "$WATCH_DIR" dir)"
+  tty_kv "CLI launcher"    "$(fmt_path "$CLI_LAUNCHER_PATH")"    "$(fmt_presence "$CLI_LAUNCHER_PATH" any)"
+  tty_kv "Service manager" "$SERVICE_MANAGER"
+  tty_kv "Service units"   "${SERVICE_UNITS_VALUE:-<none>}"
+  tty_kv "Intelligence ws" "$(fmt_path "$OPENCLAW_WORKSPACE_DIR")" "$(fmt_presence "$OPENCLAW_WORKSPACE_DIR" dir)"
   if [ "$INSTALL_MODE" = "cloud" ]; then
-    echo "  Cloud env:             $CLOUD_ENV_FILE$( [ -f "$CLOUD_ENV_FILE" ] && echo ' [present]' || echo ' [missing]')"
-    echo "  Tenant slug:           ${CLOUD_TENANT_SLUG:-<unknown>}"
-    echo "  Runtime id:            ${CLOUD_RUNTIME_ID:-<unknown>}"
-    echo "  Decommission URL:      $(decommission_url)"
+    tty_kv "Cloud env"       "$(fmt_path "$CLOUD_ENV_FILE")"       "$(fmt_presence "$CLOUD_ENV_FILE" file)"
+    tty_kv "Tenant slug"     "${CLOUD_TENANT_SLUG:-<unknown>}"
+    tty_kv "Runtime id"      "${CLOUD_RUNTIME_ID:-<unknown>}"
+    tty_kv "Decommission URL" "$(decommission_url)"
   fi
-  echo
-  echo "Flags: dry_run=$DRY_RUN yes=$YES"
-  echo "       keep_repo=$KEEP_REPO keep_data=$KEEP_DATA_DIR keep_watch=$KEEP_WATCH_DIR keep_intelligence_workspace=$KEEP_OPENCLAW_WORKSPACE keep_cloud_registration=$KEEP_CLOUD_REGISTRATION"
-  echo "       purge_intelligence_cli=$PURGE_OPENCLAW_CLI purge_telegram_token=$PURGE_TELEGRAM_TOKEN purge_node_tools=$PURGE_NODE_TOOLS"
-  echo
+
+  printf '\n'
+  tty_note "flags: dry_run=$DRY_RUN  yes=$YES"
+  tty_note "       keep_repo=$KEEP_REPO  keep_data=$KEEP_DATA_DIR  keep_watch=$KEEP_WATCH_DIR  keep_intel=$KEEP_OPENCLAW_WORKSPACE  keep_cloud=$KEEP_CLOUD_REGISTRATION"
+  tty_note "       purge_intel=$PURGE_OPENCLAW_CLI  purge_telegram=$PURGE_TELEGRAM_TOKEN  purge_node=$PURGE_NODE_TOOLS"
+  printf '\n'
 }
 
 stage_cloud_decommission() {
@@ -587,6 +826,36 @@ stage_remove_openclaw_workspace() {
   rm_path "$OPENCLAW_WORKSPACE_DIR" "Alfred Intelligence workspace"
 }
 
+stage_remove_openclaw_runtime_state() {
+  if ! openclaw_runtime_owned_by_alfred; then
+    return 0
+  fi
+
+  if [ -f "$OPENCLAW_GATEWAY_UNIT_FILE" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      plan "systemctl --user disable --now openclaw-gateway.service"
+      plan "rm $OPENCLAW_GATEWAY_UNIT_FILE (Alfred Intelligence gateway unit)"
+    else
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable --now openclaw-gateway.service >/dev/null 2>&1 || true
+      fi
+      rm -f "$OPENCLAW_GATEWAY_UNIT_FILE"
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+      fi
+      ok "Removed Alfred Intelligence gateway unit ($OPENCLAW_GATEWAY_UNIT_FILE)"
+    fi
+  fi
+
+  rm_path "$OPENCLAW_CONFIG_FILE" "Alfred Intelligence config"
+  rm_path "$OPENCLAW_ENV_FILE" "Alfred Intelligence env file"
+
+  rm_empty_dir "$OPENCLAW_SECRETS_DIR" "Alfred Intelligence secrets dir"
+  rm_empty_dir "$OPENCLAW_PARENT_DIR" "Alfred Intelligence workspace parent"
+  rm_empty_dir "$OPENCLAW_CONFIG_DIR/workspace" "Alfred Intelligence workspace root"
+  rm_empty_dir "$OPENCLAW_CONFIG_DIR" "Alfred Intelligence home"
+}
+
 stage_remove_repo() {
   [ "$KEEP_REPO" -eq 0 ] || { say "Keeping repo (--keep-repo)"; return 0; }
   if [ ! -d "$REPO_DIR" ]; then
@@ -662,6 +931,7 @@ stage_purge_node_tools() {
 }
 
 resolve_defaults
+interactive_menu
 summarize
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -673,39 +943,42 @@ if [ "$INSTALL_MODE" = "cloud" ] && [ "$KEEP_DATA_DIR" -eq 0 ]; then
 fi
 
 if [ "$DRY_RUN" -eq 0 ]; then
-  if ! confirm "Proceed with Alfred cleanup?"; then
+  if ! confirm "Apply the plan above?" 1; then
     say "Aborted."
     exit 0
   fi
 fi
 
+tty_header "Stopping services"
 stage_cloud_decommission
 stage_stop_via_cli
 stage_stop_launchd
 stage_stop_systemd
 stage_free_ports
 
+tty_header "Removing Alfred state"
 stage_remove_env_local
-
 stage_remove_cli_launcher
 stage_remove_data_dir
 stage_remove_watch_dir
 stage_remove_openclaw_workspace
+stage_remove_openclaw_runtime_state
 stage_remove_repo
 
-stage_purge_openclaw_cli
-stage_purge_telegram_token
-stage_purge_node_tools
+if [ "$PURGE_OPENCLAW_CLI" -eq 1 ] || [ "$PURGE_TELEGRAM_TOKEN" -eq 1 ] || [ "$PURGE_NODE_TOOLS" -eq 1 ]; then
+  tty_header "Purging optional components"
+  stage_purge_openclaw_cli
+  stage_purge_telegram_token
+  stage_purge_node_tools
+fi
 
-echo
+printf '\n'
+tty_rule
 if [ "$DRY_RUN" -eq 1 ]; then
   ok "Dry-run complete. Re-run without --dry-run to apply."
 else
   ok "Alfred cleanup complete."
-  cat <<EOF
-
-Reinstall from scratch with:
-  curl -fsSL https://raw.githubusercontent.com/alfreds-inc/alfred-install/main/install.sh | bash
-
-EOF
+  printf '\n'
+  tty_note "Reinstall from scratch with:"
+  printf '  %bcurl -fsSL https://raw.githubusercontent.com/alfreds-inc/alfred-install/main/install.sh | bash%b\n\n' "$TTY_BOLD" "$TTY_RESET"
 fi
