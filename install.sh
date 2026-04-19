@@ -107,6 +107,7 @@ LAST_PROGRESS_REWIND=0
 # breathing room. TTY-gated so piped/redirected output stays clean.
 _alfred_exit_trailing_newline() {
   [ -t 1 ] && printf '\n'
+  return 0
 }
 trap _alfred_exit_trailing_newline EXIT
 
