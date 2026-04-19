@@ -80,51 +80,83 @@ fi
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_DIM=$'\033[2m'
   C_BLUE=$'\033[38;5;75m'
   C_GREEN=$'\033[38;5;114m'
   C_YELLOW=$'\033[38;5;179m'
-  C_DIM=$'\033[2m'
-  C_RED=$'\033[31m'
-  C_BOLD=$'\033[1m'
+  C_RED=$'\033[38;5;174m'
+  C_CYAN=$'\033[38;5;110m'
+  C_MAGENTA=$'\033[38;5;176m'
 else
   C_RESET=""
+  C_BOLD=""
+  C_DIM=""
   C_BLUE=""
   C_GREEN=""
   C_YELLOW=""
-  C_DIM=""
   C_RED=""
-  C_BOLD=""
+  C_CYAN=""
+  C_MAGENTA=""
 fi
 
-LAST_PROGRESS_MESSAGE=""
+LAST_PROGRESS_TEXT=""
 LAST_PROGRESS_REWIND=0
 
-remember_progress_line() {
-  LAST_PROGRESS_MESSAGE="$1"
+_alfred_remember_progress() {
+  LAST_PROGRESS_TEXT="$1"
   LAST_PROGRESS_REWIND="${2:-0}"
 }
 
+_alfred_forget_progress() {
+  LAST_PROGRESS_TEXT=""
+  LAST_PROGRESS_REWIND=0
+}
+
 banner() {
-  printf '\n%s%sAlfred%s %sInstaller%s\n' "$C_BOLD" "$C_BLUE" "$C_RESET" "$C_DIM" "$C_RESET"
-  printf '%s-----------------%s\n\n' "$C_DIM" "$C_RESET"
+  if [ "${ALFRED_BANNER_SHOWN:-0}" = "1" ]; then
+    _alfred_forget_progress
+    return 0
+  fi
+  printf '\n%sAlfred%s %sInstaller%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
+  export ALFRED_BANNER_SHOWN=1
+  _alfred_forget_progress
+}
+
+section() {
+  local title="$1"
+  local color="${2:-}"
+  local title_prefix="$C_BOLD"
+  if [ -n "$color" ]; then
+    title_prefix="$color$C_BOLD"
+  fi
+  printf '\n%s%s%s\n' "$title_prefix" "$title" "$C_RESET"
+  _alfred_forget_progress
 }
 
 step() {
-  remember_progress_line "${C_BLUE}->${C_RESET} ${C_BOLD}$*${C_RESET}" 2
-  printf '\n%s->%s %s%s%s\n\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+  _alfred_remember_progress "$*" 1
+  printf '  %s%s%s\n' "$C_BOLD" "$*" "$C_RESET"
 }
 
 ok() {
-  printf '%sOK%s  %s\n' "$C_GREEN" "$C_RESET" "$*"
+  _alfred_forget_progress
+  printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"
 }
 
 note() {
-  remember_progress_line "${C_DIM}$*${C_RESET}" 1
-  printf '%s%s%s\n' "$C_DIM" "$*" "$C_RESET"
+  _alfred_remember_progress "$*" 1
+  printf '    %s%s%s\n' "$C_DIM" "$*" "$C_RESET"
+}
+
+info() {
+  _alfred_forget_progress
+  printf '    %s%s%s\n' "$C_CYAN" "$*" "$C_RESET"
 }
 
 warn() {
-  printf '%sWARN:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2
+  _alfred_forget_progress
+  printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2
 }
 
 confirm_default_yes() {
@@ -143,14 +175,15 @@ confirm_default_yes() {
   esac
 }
 
-# Reads a secret interactively from /dev/tty. Echoes one '*' per keystroke
-# while typing, handles backspace, and rewrites the line on Enter so the
-# final rendering shows the last 4 characters alongside stars (e.g.
-# "***********jd94"). Falls back to silent read when no TTY is available.
+# Reads a secret interactively. Echoes '*' per keystroke capped at MAX_ECHO so
+# long keys do not wrap. On <Enter> rewrites the line with a dim reveal of the
+# last four chars.
 read_secret_with_reveal() {
   local __var="$1"
   local prompt="$2"
   local answer=""
+  local max_echo=16
+  local echoed=0
 
   if ! can_prompt; then
     printf '%s' "$prompt"
@@ -160,8 +193,8 @@ read_secret_with_reveal() {
     return 0
   fi
 
-  local ch stars
-  printf '\033[s%s' "$prompt" > /dev/tty
+  local ch
+  printf '%s' "$prompt" > /dev/tty
   while IFS= read -r -n1 -s ch < /dev/tty; do
     if [ -z "$ch" ]; then
       break
@@ -170,11 +203,10 @@ read_secret_with_reveal() {
       $'\x7f'|$'\b')
         if [ -n "$answer" ]; then
           answer="${answer%?}"
-          stars=""
-          if [ "${#answer}" -gt 0 ]; then
-            stars="$(printf '%*s' "${#answer}" '' | tr ' ' '*')"
+          if [ "$echoed" -gt 0 ]; then
+            printf '\b \b' > /dev/tty
+            echoed=$(( echoed - 1 ))
           fi
-          printf '\033[u\033[J%s%s' "$prompt" "$stars" > /dev/tty
         fi
         ;;
       $'\x03')
@@ -183,7 +215,10 @@ read_secret_with_reveal() {
         ;;
       *)
         answer+="$ch"
-        printf '*' > /dev/tty
+        if [ "$echoed" -lt "$max_echo" ]; then
+          printf '*' > /dev/tty
+          echoed=$(( echoed + 1 ))
+        fi
         ;;
     esac
   done
@@ -194,43 +229,80 @@ read_secret_with_reveal() {
   if [ "$len" -ge 5 ]; then
     visible="${answer: -4}"
     star_count=$(( len - 4 ))
+    if [ "$star_count" -gt 12 ]; then
+      star_count=12
+    fi
   fi
-  stars=""
+  local stars=""
   if [ "$star_count" -gt 0 ]; then
     stars="$(printf '%*s' "$star_count" '' | tr ' ' '*')"
   fi
-  printf '\033[u\033[J%s%s%s%s%s\n' "$prompt" "$C_DIM" "$stars" "$C_RESET" "$visible" > /dev/tty
+  printf '\r\033[2K%s%s%s%s%s\n' "$prompt" "$C_DIM" "$stars" "$C_RESET" "$visible" > /dev/tty
 
   printf -v "$__var" '%s' "$answer"
 }
 
 fail() {
-  printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2
+  _alfred_forget_progress
+  printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2
   exit 1
+}
+
+ALFRED_SPINNER_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+
+_alfred_render_spinner_line() {
+  local message="$1"
+  local frame="$2"
+  printf '\r\033[2K  %s%s%s %s' "$C_DIM" "$frame" "$C_RESET" "$message"
+}
+
+_alfred_render_status_line() {
+  local message="$1"
+  local mark="$2"
+  local color="$3"
+  printf '\r\033[2K  %s%s%s %s\n' "$color" "$mark" "$C_RESET" "$message"
+}
+
+_alfred_spin_while() {
+  [ -t 1 ] || return 0
+  local pid="$1"
+  local message="$2"
+  local attach="${3:-0}"
+  local rewind="${4:-0}"
+  local i=0
+
+  if [ "$attach" -eq 1 ] && [ "$rewind" -gt 0 ]; then
+    printf '\033[%sA' "$rewind"
+  fi
+
+  while kill -0 "$pid" 2>/dev/null; do
+    _alfred_render_spinner_line "$message" "${ALFRED_SPINNER_FRAMES[$i]}"
+    i=$(( (i + 1) % ${#ALFRED_SPINNER_FRAMES[@]} ))
+    sleep 0.08
+  done
 }
 
 run_quiet() {
   local label="$1"
   shift
   local log_file persisted_log cmd_pid cmd_status
-  local progress_message="$label"
-  local attach_to_previous=0
-  local progress_rewind=0
+  local message="$label"
+  local attach=0
+  local rewind=0
   log_file="$(mktemp "${TMPDIR:-/tmp}/alfred-install.XXXXXX")"
   persisted_log="${log_file}.log"
 
-  if [ -n "${LAST_PROGRESS_MESSAGE:-}" ]; then
-    progress_message="$LAST_PROGRESS_MESSAGE"
-    attach_to_previous=1
-    progress_rewind="${LAST_PROGRESS_REWIND:-0}"
+  if [ -n "${LAST_PROGRESS_TEXT:-}" ]; then
+    message="$LAST_PROGRESS_TEXT"
+    attach=1
+    rewind="${LAST_PROGRESS_REWIND:-0}"
   fi
-  LAST_PROGRESS_MESSAGE=""
-  LAST_PROGRESS_REWIND=0
+  _alfred_forget_progress
 
   if [ -t 1 ]; then
     "$@" >"$log_file" 2>&1 &
     cmd_pid=$!
-    spin_while_running "$cmd_pid" "$progress_message" "$attach_to_previous" "$progress_rewind"
+    _alfred_spin_while "$cmd_pid" "$message" "$attach" "$rewind"
     set +e
     wait "$cmd_pid"
     cmd_status=$?
@@ -243,58 +315,23 @@ run_quiet() {
   fi
 
   if [ "${cmd_status:-0}" -eq 0 ]; then
+    if [ -t 1 ]; then
+      _alfred_render_status_line "$message" "✓" "$C_GREEN"
+    fi
     rm -f "$log_file"
     return 0
   fi
 
-  mv "$log_file" "$persisted_log"
-  printf '\n' >&2
-  printf '%sERROR:%s %s failed\n' "$C_RED" "$C_RESET" "$label" >&2
-  printf '%sRecent output:%s\n' "$C_DIM" "$C_RESET" >&2
-  tail -n 80 "$persisted_log" >&2 || true
-  printf '%sFull log:%s %s\n' "$C_DIM" "$C_RESET" "$persisted_log" >&2
-  exit 1
-}
-
-render_progress_line() {
-  local message="$1"
-  local spinner="${2:-}"
-
-  if [ -n "$spinner" ]; then
-    printf '\r\033[2K%s %s%s%s' "$message" "$C_DIM" "$spinner" "$C_RESET"
+  if [ -t 1 ]; then
+    _alfred_render_status_line "$message" "✗" "$C_RED"
   else
-    printf '\r\033[2K%s\n' "$message"
+    printf '  ✗ %s\n' "$message" >&2
   fi
-}
-
-spin_while_running() {
-  [ -t 1 ] || return 0
-
-  local pid="$1"
-  local message="$2"
-  local attach_to_previous="${3:-0}"
-  local rewind_lines="${4:-0}"
-  local frames=('-' $'\\' '|' '/')
-  local i=0
-  local ticks=0
-  local shown=0
-
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$ticks" -ge 2 ]; then
-      if [ "$shown" -eq 0 ] && [ "$attach_to_previous" -eq 1 ] && [ "$rewind_lines" -gt 0 ]; then
-        printf '\033[%sA' "$rewind_lines"
-      fi
-      shown=1
-      render_progress_line "$message" "${frames[$i]}"
-      i=$(( (i + 1) % ${#frames[@]} ))
-    fi
-    sleep 0.1
-    ticks=$((ticks + 1))
-  done
-
-  if [ "$shown" -eq 1 ]; then
-    render_progress_line "$message"
-  fi
+  mv "$log_file" "$persisted_log"
+  printf '    %sRecent output:%s\n' "$C_DIM" "$C_RESET" >&2
+  tail -n 80 "$persisted_log" >&2 || true
+  printf '    %sFull log:%s %s\n' "$C_DIM" "$C_RESET" "$persisted_log" >&2
+  exit 1
 }
 
 repo_has_local_changes() {
@@ -376,8 +413,11 @@ run_with_sudo() {
 
 ensure_sudo_session() {
   if [ -n "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
-    note "Administrator access is required for system packages"
+    if ! $SUDO -n true 2>/dev/null; then
+      note "Administrator access required — you may be prompted for your password"
+    fi
     $SUDO -v
+    _alfred_forget_progress
   fi
 }
 
@@ -1162,10 +1202,10 @@ print_cloud_handoff() {
   [ "$MODE" = "cloud" ] || return 0
 
   if [ -n "$CLAIM_URL" ]; then
-    printf '\n  %sCloud Enrollment Complete%s\n' "$C_BOLD" "$C_RESET"
-    printf '  Hand this claim URL to the customer owner exactly once:\n'
+    section "Cloud enrollment" "$C_MAGENTA"
+    note "Hand this claim URL to the customer owner exactly once:"
     printf '    %s\n' "$CLAIM_URL"
-    printf '  %sDo not store this URL in shared logs or tickets.%s\n' "$C_DIM" "$C_RESET"
+    note "Do not store this URL in shared logs or tickets."
   else
     note "Cloud runtime already had stored enrollment state; no new claim URL was emitted"
   fi
@@ -1290,6 +1330,7 @@ fi
 INSTALL_STATUS="preflight"
 persist_install_state
 
+section "Prerequisites" "$C_CYAN"
 ensure_github_cli
 ensure_github_auth
 need_cmd git
@@ -1300,6 +1341,7 @@ if [ "$MODE" = "cloud" ]; then
   persist_install_state
 fi
 
+section "Repository" "$C_BLUE"
 if [ ! -d "$REPO_DIR/.git" ]; then
   step "Cloning Alfred into $REPO_DIR"
   if [ -n "$BRANCH" ]; then
@@ -1307,7 +1349,6 @@ if [ ! -d "$REPO_DIR/.git" ]; then
   else
     run_quiet "repository clone" gh repo clone "$REPO_SLUG" "$REPO_DIR"
   fi
-  ok "Repository ready"
 else
   ok "Using existing repo at $REPO_DIR"
   refresh_existing_repo
