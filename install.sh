@@ -160,8 +160,8 @@ read_secret_with_reveal() {
     return 0
   fi
 
-  local ch
-  printf '%s' "$prompt" > /dev/tty
+  local ch stars
+  printf '\033[s%s' "$prompt" > /dev/tty
   while IFS= read -r -n1 -s ch < /dev/tty; do
     if [ -z "$ch" ]; then
       break
@@ -170,7 +170,11 @@ read_secret_with_reveal() {
       $'\x7f'|$'\b')
         if [ -n "$answer" ]; then
           answer="${answer%?}"
-          printf '\b \b' > /dev/tty
+          stars=""
+          if [ "${#answer}" -gt 0 ]; then
+            stars="$(printf '%*s' "${#answer}" '' | tr ' ' '*')"
+          fi
+          printf '\033[u\033[J%s%s' "$prompt" "$stars" > /dev/tty
         fi
         ;;
       $'\x03')
@@ -186,21 +190,16 @@ read_secret_with_reveal() {
 
   local len=${#answer}
   local visible=""
-  local star_count=0
+  local star_count="$len"
   if [ "$len" -ge 5 ]; then
     visible="${answer: -4}"
     star_count=$(( len - 4 ))
-    if [ "$star_count" -gt 12 ]; then
-      star_count=12
-    fi
-  else
-    star_count="$len"
   fi
-  local stars=""
+  stars=""
   if [ "$star_count" -gt 0 ]; then
     stars="$(printf '%*s' "$star_count" '' | tr ' ' '*')"
   fi
-  printf '\r\033[2K%s%s%s%s%s\n' "$prompt" "$C_DIM" "$stars" "$C_RESET" "$visible" > /dev/tty
+  printf '\033[u\033[J%s%s%s%s%s\n' "$prompt" "$C_DIM" "$stars" "$C_RESET" "$visible" > /dev/tty
 
   printf -v "$__var" '%s' "$answer"
 }
@@ -262,7 +261,7 @@ render_progress_line() {
   local spinner="${2:-}"
 
   if [ -n "$spinner" ]; then
-    printf '\r\033[2K%s %s%s%s\n' "$message" "$C_DIM" "$spinner" "$C_RESET"
+    printf '\r\033[2K%s %s%s%s' "$message" "$C_DIM" "$spinner" "$C_RESET"
   else
     printf '\r\033[2K%s\n' "$message"
   fi
@@ -275,24 +274,18 @@ spin_while_running() {
   local message="$2"
   local attach_to_previous="${3:-0}"
   local rewind_lines="${4:-0}"
-  local frames=('-' '\\' '|' '/')
+  local frames=('-' $'\\' '|' '/')
   local i=0
   local ticks=0
   local shown=0
-  local rendered_line=0
-
-  if [ "$attach_to_previous" -eq 1 ]; then
-    rendered_line=1
-  fi
 
   while kill -0 "$pid" 2>/dev/null; do
     if [ "$ticks" -ge 2 ]; then
-      shown=1
-      if [ "$rendered_line" -eq 1 ]; then
+      if [ "$shown" -eq 0 ] && [ "$attach_to_previous" -eq 1 ] && [ "$rewind_lines" -gt 0 ]; then
         printf '\033[%sA' "$rewind_lines"
       fi
+      shown=1
       render_progress_line "$message" "${frames[$i]}"
-      rendered_line=1
       i=$(( (i + 1) % ${#frames[@]} ))
     fi
     sleep 0.1
@@ -300,7 +293,6 @@ spin_while_running() {
   done
 
   if [ "$shown" -eq 1 ]; then
-    printf '\033[%sA' "$rewind_lines"
     render_progress_line "$message"
   fi
 }
